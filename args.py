@@ -3,7 +3,6 @@
 import argparse
 from datetime import date
 
-
 def parse_args(argv=None) -> argparse.Namespace:
     """ Parses command-line arguments. Any metadata not passed as a flag
     is prompted for interactively (unless --non-interactive is set).
@@ -24,7 +23,6 @@ def parse_args(argv=None) -> argparse.Namespace:
 
     return parser.parse_args(argv)
 
-
 def _resolve(value: str, prompt_text: str, interactive: bool) -> str:
     """ Returns the provided value, else prompts for it (when interactive),
     else falls back to an empty string.
@@ -37,7 +35,6 @@ def _resolve(value: str, prompt_text: str, interactive: bool) -> str:
         return input(prompt_text).strip()
 
     return ''
-
 
 def get_metadata(args: argparse.Namespace) -> dict:
     """ Builds recording metadata from CLI args, prompting for anything missing.

@@ -18,6 +18,9 @@ load_dotenv()
 
 SUPPORTED_FORMATS = {'.mp3', '.mp4', '.mpeg', '.mpga', '.m4a', '.wav', '.webm'}
 MAX_FILE_SIZE_MB = 20
+MAX_AUDIO_SECONDS = 1400          
+CHUNK_SECONDS = 1200            
+
 
 class Microphone:
     """
@@ -41,14 +44,15 @@ class Microphone:
         self.client = OpenAI()
 
     def chunker(self, audio: Path) -> list:
+        """ Chunks the audio file so that it matches the requirements.
+        :param audio: Path to the audio file, which is by default data/audio
+        :return chunks: A list of chunks
+        """ 
         sound = AudioSegment.from_file(str(audio))
-
         total_ms = len(sound)
-        total_bytes = audio.stat().st_size
 
-        target_bytes = 20 * 1024 * 1024
-        bytes_per_ms = total_bytes / total_ms
-        chunk_ms = int(target_bytes / bytes_per_ms)
+        # Chunk by DURATION, not file size: gpt-4o-transcribe caps audio at 1400 s.
+        chunk_ms = CHUNK_SECONDS * 1000
 
         chunks_dir = Path('data/chunks')
         chunks_dir.mkdir(parents=True, exist_ok=True)
@@ -56,39 +60,17 @@ class Microphone:
             if f.is_file():
                 f.unlink()
 
-        suffix = audio.suffix.lower().lstrip('.')
-
-        # 'format' values must be ffmpeg muxer names, NOT file extensions.
-        # 'm4a' is not a muxer -> use 'ipod'. 'mpeg'/'mpga' audio -> re-wrap as mp3.
-        export_options = {
-            'mp3':  {'extension': 'mp3',  'format': 'mp3'},
-            'mpga': {'extension': 'mp3',  'format': 'mp3'},
-            'mpeg': {'extension': 'mp3',  'format': 'mp3'},
-            'wav':  {'extension': 'wav',  'format': 'wav'},
-            'webm': {'extension': 'webm', 'format': 'webm', 'codec': 'libopus'},
-            'm4a':  {'extension': 'm4a',  'format': 'ipod', 'codec': 'aac'},
-            'mp4':  {'extension': 'm4a',  'format': 'ipod', 'codec': 'aac'},
-        }
-
-        options = export_options.get(
-            suffix, {'extension': 'mp3', 'format': 'mp3'})  # safe fallback
-
         chunks = []
         for i, start in enumerate(range(0, total_ms, chunk_ms)):
             end = min(start + chunk_ms, total_ms)
             segment = sound[start:end]
-            chunk_path = chunks_dir / f"chunk_{i:03d}.{options['extension']}"
-
-            export_kwargs = {'format': options['format']}
-            if 'codec' in options:
-                export_kwargs['codec'] = options['codec']
-
-            segment.export(str(chunk_path), **export_kwargs)
+            chunk_path = chunks_dir / f"chunk_{i:03d}.mp3"
+            segment.export(str(chunk_path), format='mp3', bitrate='128k')
             chunks.append(chunk_path)
 
         print(f'Created {len(chunks)} chunks')
         return chunks
-
+        
     def transcribe(self, audio_path: Path, prompt: str = "") -> str:
         """ Transcribes a single audio file.
         :param audio_path: Path to the audio file
@@ -196,7 +178,6 @@ def archive_previous_transcripts(
 
 def load_audio(audio_dir: Path = Path('data/audio')) -> Path:
     """ Loads the audio file from the audio folder.
-    Hidden files are skipped.
     :param audio_dir: Folder holding the audio file
     :return path: Path to the audio file
     """
@@ -218,25 +199,28 @@ def load_audio(audio_dir: Path = Path('data/audio')) -> Path:
 def validate_audio(path: Path) -> bool:
     """ Validates the audio file against the Whisper API criteria.
     Raises ValueError for unsupported formats. Returns whether the file
-    needs chunking based on the 25 MB size limit.
+    needs chunking based on the 20 MB size limit.
     :param path: Path to the audio file
     :return needs_chunking: True if the file exceeds the size limit
     """
 
     suffix = path.suffix.lower()
-
     if suffix not in SUPPORTED_FORMATS:
         raise ValueError(
             f'Unsupported audio format: {suffix}. '
             f'Supported formats are {sorted(SUPPORTED_FORMATS)}.')
 
     size_mb = path.stat().st_size / (1024 * 1024)
-    needs_chunking = size_mb > MAX_FILE_SIZE_MB
+    duration_s = len(AudioSegment.from_file(str(path))) / 1000
 
-    return needs_chunking
-
+    # Chunk if EITHER limit is exceeded.
+    return size_mb > MAX_FILE_SIZE_MB or duration_s > MAX_AUDIO_SECONDS
 
 def main(argv=None) -> None:
+
+    # =-=-=-=-
+    # Get metadata 
+    # =-=-=-=-
 
     args = parse_args(argv)
 
@@ -257,18 +241,20 @@ def main(argv=None) -> None:
 
     print(f'Loaded audio: {audio_path.name}')
 
+    # =-=-=-=-
     # 2. Check if it meets criterias,
     #    Max File Size: 20 MB.
     #    Supported Formats: mp3, mp4, mpeg, mpga, m4a, wav, and webm.
+    # =-=-=-=-
 
     print('\n =-=-=-=- Validating audio -=-=-=-= \n')
 
     needs_chunking = validate_audio(audio_path)
     print(f'Chunking needed: {needs_chunking}')
 
+    # =-=-=-=-
     # 3. Transcribe
-    #    If chunking is needed, transcribe each chunk while passing
-    #    the tail of the previous transcript as context.
+    # =-=-=-=-
 
     print('\n =-=-=-=- Transcribing -=-=-=-= \n')
 
@@ -291,9 +277,10 @@ def main(argv=None) -> None:
 
     print(f'Transcribed {len(txt)} characters')
 
-
+    # =-=-=-=-
     # 4. Save to txt and puts audio in history/audio.
-
+    # =-=-=-=-
+    
     print('\n =-=-=-=- Saving -=-=-=-= \n')
 
     organized = microphone.organize(txt)
